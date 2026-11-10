@@ -2,7 +2,7 @@
 
 Een zonnepaneel op twee servo's dat automatisch het licht volgt, met een live dashboard op de laptop. Het dashboard toont de lichtwaarden (in volt), de servohoeken en de paneelspanning, en bewaart alle metingen in een database zodat je de historie kunt bekijken.
 
-> Project IoT, eerste semester. Gemaakt door **Matteo Belmans**.
+> Project IoT, eerste semester. Gemaakt door **[jouw naam]**, **[opleiding / school]**.
 
 ## Inhoud
 
@@ -15,9 +15,10 @@ Een zonnepaneel op twee servo's dat automatisch het licht volgt, met een live da
 7. [Technologiekeuzes](#technologiekeuzes)
 8. [Installatie en gebruik](#installatie-en-gebruik)
 9. [Configuratie](#configuratie)
-10. [Opslag en API](#opslag-en-api)
-11. [Bestanden in deze repo](#bestanden-in-deze-repo)
-12. [Beperkingen en uitbreidingen](#beperkingen-en-uitbreidingen)
+10. [Bediening (dashboard naar Pico)](#bediening-dashboard-naar-pico)
+11. [Opslag en API](#opslag-en-api)
+12. [Bestanden in deze repo](#bestanden-in-deze-repo)
+13. [Beperkingen en uitbreidingen](#beperkingen-en-uitbreidingen)
 
 ---
 
@@ -40,6 +41,7 @@ Een vast zonnepaneel staat meestal niet de hele dag optimaal naar de zon gericht
 4. De spanning van het paneel wordt gemeten via een spanningsdeler op een ADC-pin van de Pico.
 5. De Pico stuurt elke 500 ms alle meetwaarden naar de laptop, via **wifi (HTTP POST)** of via **USB-serial**.
 6. Een Flask-backend op de laptop ontvangt de metingen, rekent ze om naar volt, bewaart ze in een **SQLite-database** en toont alles op een webdashboard.
+7. De communicatie is **bidirectioneel**: via een knop op het dashboard stuurt de backend een commando terug naar de Pico (nu: servo's resetten naar de startpositie). Zie [Bediening](#bediening-dashboard-naar-pico).
 
 ## Blokschema
 
@@ -51,8 +53,8 @@ flowchart LR
     DEL -->|"GP26 ADC"| PICO
     PICO -->|"PWM"| SERVO["2 x servo (pan en tilt)"]
     SERVO -. beweegt .-> PAN
-    PICO -->|"WiFi: HTTP POST (thuis)"| BACK["Laptop: Flask-backend"]
-    PICO -->|"USB-serial (school)"| BACK
+    PICO <-->|"WiFi: HTTP (thuis)"| BACK["Laptop: Flask-backend"]
+    PICO <-->|"USB-serial (school)"| BACK
     BACK --> DB[("SQLite: metingen.db")]
     BACK --> DASH["Webdashboard in de browser"]
     DB --> DASH
@@ -163,6 +165,7 @@ Bij 6 V op het paneel staat er ongeveer 3,14 V op GP26, wat onder de 3,3 V-limie
 |---|---|
 | `WIFI_AAN` | `True` voor wifi (HTTP), `False` voor alleen USB-serial |
 | `STUUR_INTERVAL` | Tijd in ms tussen twee verzendingen |
+| `PAUZE_NA_RESET` | Tijd in ms dat het volgen pauzeert na een reset vanaf het dashboard |
 | `DREMPEL` | Minimale fout voordat een servo beweegt |
 | `KP` | Versterking: hoe sterk de stap meegroeit met de fout |
 | `STAP_MIN`, `STAP_MAX` | Minimale en maximale stap per ronde (graden) |
@@ -201,16 +204,37 @@ Elke 500 ms stuurt de Pico de volgende metingen.
 Wifi (HTTP POST naar `/ingest`, JSON):
 
 ```json
-{"ldr": [7074, 7113, 7011, 6779], "h": 0.007, "v": 0.014, "pan": 49.4, "tilt": 99.1, "raw": 31250}
+{"ldr": [7074, 7113, 7011, 6779], "h": 0.007, "v": 0.014, "pan": 49.4, "tilt": 99.1, "raw": 31250, "ack": 0}
 ```
 
-USB-serial (één tekstregel, begint met `D,`):
+Het antwoord van de backend is `{}`, of een commando voor de Pico: `{"cmd": "reset", "id": 1794315162}`.
+
+USB-serial (één tekstregel van de Pico, begint met `D,`):
 
 ```
-D,<ldr1>,<ldr2>,<ldr3>,<ldr4>,<h-fout>,<v-fout>,<pan-hoek>,<tilt-hoek>,<paneel-raw>
+D,<ldr1>,<ldr2>,<ldr3>,<ldr4>,<h-fout>,<v-fout>,<pan-hoek>,<tilt-hoek>,<paneel-raw>,<ack>
 ```
 
-`raw` is de 16-bit ADC-waarde (0 tot 65535) van GP26. Het dashboard rekent die om met `raw / 65535 * 3.3 * (R_BOVEN + R_ONDER) / R_ONDER * KALIBRATIE`.
+USB-serial (commando van de backend naar de Pico):
+
+```
+CMD,reset,<id>
+```
+
+`raw` is de 16-bit ADC-waarde (0 tot 65535) van GP26. `ack` is het id van het laatst uitgevoerde commando (0 als er nog geen was). Het dashboard rekent die om met `raw / 65535 * 3.3 * (R_BOVEN + R_ONDER) / R_ONDER * KALIBRATIE`.
+
+## Bediening (dashboard naar Pico)
+
+Naast metingen van de Pico naar het dashboard werkt de communicatie ook de andere kant op. Op het dashboard staat de knop **↺ Reset servo's naar startpositie**. Hij zet pan en tilt terug op `PAN_START` en `TILT_START`. Daarna pauzeert het volgen `PAUZE_NA_RESET` milliseconden (standaard 5 s), zodat je de startpositie ziet voordat de tracker weer naar het licht draait.
+
+Zo werkt het:
+
+1. De knop stuurt `POST /command` met `{"cmd": "reset"}` naar de backend. De backend maakt een commando met een uniek id en toont "wachten op bevestiging".
+2. **Wifi:** de Pico stuurt elke 500 ms metingen via `POST /ingest`. Het antwoord van de backend bevat het openstaande commando, bijvoorbeeld `{"cmd": "reset", "id": 1794315162}`. De Pico voert het uit.
+3. **USB:** de backend schrijft de regel `CMD,reset,<id>` naar de seriële poort. De Pico leest die tussendoor en voert het commando uit.
+4. De Pico meldt het id van het laatst uitgevoerde commando terug als `ack` in de volgende meting. Daarna toont het dashboard "uitgevoerd om hh:mm:ss" en is het commando afgesloten.
+
+Een commando met hetzelfde id wordt door de Pico maar één keer uitgevoerd. De backend herhaalt een commando tot de bevestiging binnen is, dus een verloren bericht gaat niet verloren en een dubbel bericht doet geen kwaad. Staat de Pico offline, dan toont het dashboard dat het commando klaarstaat.
 
 ## Opslag en API
 
@@ -227,7 +251,8 @@ Alle metingen worden elke `OPSLAG_INTERVAL` seconden bewaard in `metingen.db` (S
 | Route | Functie |
 |---|---|
 | `/` | Dashboard |
-| `/ingest` (POST) | Ontvangt metingen van de Pico |
+| `/ingest` (POST) | Ontvangt metingen van de Pico en antwoordt met een openstaand commando (of `{}`) |
+| `/command` (POST) | Het dashboard stuurt een commando naar de Pico, bijvoorbeeld `{"cmd": "reset"}` |
 | `/data` | Live waarden en recente punten (JSON) |
 | `/history?periode=uur\|dag\|week\|alles` | Gemiddelden per tijdsblok uit de database (JSON) |
 | `/export.csv` | Alle opgeslagen metingen als CSV |
@@ -248,5 +273,6 @@ Alle metingen worden elke `OPSLAG_INTERVAL` seconden bewaard in `metingen.db` (S
 
 - De LDR-waarden zijn omgerekend naar volt, maar niet naar een absolute lichtsterkte (lux).
 - Stroom en vermogen van het paneel worden niet gemeten. Daarvoor is bijvoorbeeld een INA219 nodig.
+- Het dashboard en de resetknop hebben geen inlog: iedereen op hetzelfde netwerk kan de knop gebruiken. Gebruik het daarom alleen op een eigen, vertrouwd netwerk.
 - De communicatie is niet versleuteld (HTTP). Het dashboard is bedoeld voor gebruik op een eigen, vertrouwd netwerk.
 - Er is geen buffering: als de verbinding wegvalt, gaan de metingen in die periode niet naar de database.
