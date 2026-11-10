@@ -1,0 +1,11 @@
+# Geheimen
+wifi_secrets.py
+
+# Database met metingen
+metingen.db
+metingen.db-wal
+metingen.db-shm
+
+# Python
+__pycache__/
+*.pyc
