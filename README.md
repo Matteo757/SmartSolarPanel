@@ -2,7 +2,7 @@
 
 Een zonnepaneel op twee servo's dat automatisch het licht volgt, met een live dashboard op de laptop. Het dashboard toont de lichtwaarden (in volt), de servohoeken en de paneelspanning, en bewaart alle metingen in een database zodat je de historie kunt bekijken.
 
-> Project IoT, eerste semester. Gemaakt door **[jouw naam]**, **[opleiding / school]**.
+> Project IoT, eerste semester. Gemaakt door **Matteo Belmans**.
 
 ## Inhoud
 
